@@ -2,6 +2,7 @@ package com.github.valich.jflextokotlin.actions
 
 import com.intellij.ide.highlighter.JavaFileType
 import com.intellij.lang.jvm.JvmModifier
+import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.PlatformDataKeys
@@ -16,6 +17,9 @@ import kotlin.streams.toList
 const val packedLineMaxLength = 5000
 
 class ConvertLexerToKotlin : AnAction() {
+    override fun getActionUpdateThread(): ActionUpdateThread {
+        return ActionUpdateThread.BGT
+    }
 
     override fun update(e: AnActionEvent) {
         templatePresentation.isEnabledAndVisible = e.isJavaFlexLexerFile()
@@ -31,8 +35,9 @@ class ConvertLexerToKotlin : AnAction() {
     }
 
     private fun invokeConversion(javaPsi: PsiJavaFile): KtFile {
+        // FIXME JavaToKotlin conversion not work. I have no way to fix it.
         return JavaToKotlinAction.convertFiles(
-            javaFiles = listOf(javaPsi),
+            files = listOf(javaPsi),
             project = javaPsi.project,
             module = ModuleUtilCore.findModuleForFile(javaPsi)!!,
         ).single()
@@ -46,7 +51,7 @@ class ConvertLexerToKotlin : AnAction() {
                         if (expression.operands.all {
                                 (it as? PsiLiteralExpressionImpl)?.literalElementType == JavaTokenType.STRING_LITERAL
                             }) {
-                            expression.replace(createShorterStringConcat(expression))
+                            createShorterStringConcat(expression)?.let { expression.replace(it) }
                             return
                         }
                     }
@@ -55,7 +60,7 @@ class ConvertLexerToKotlin : AnAction() {
 
                 override fun visitLiteralExpression(expression: PsiLiteralExpression) {
                     if ((expression as? PsiLiteralExpressionImpl)?.literalElementType == JavaTokenType.STRING_LITERAL
-                        && (expression.value as String).any { it.toInt() < 10 }
+                        && (expression.value as String).any { it.code < 10 }
                     ) {
                         expression.replace(createUnicodeNotationPsiString(expression))
                     } else {
@@ -117,7 +122,7 @@ class ConvertLexerToKotlin : AnAction() {
         }
     }
 
-    private fun createShorterStringConcat(expression: PsiPolyadicExpression): PsiElement {
+    private fun createShorterStringConcat(expression: PsiPolyadicExpression): PsiElement? {
         val totalString =
             expression.operands.joinToString(separator = "") { (it as PsiLiteralExpression).value as String }
 
@@ -127,8 +132,14 @@ class ConvertLexerToKotlin : AnAction() {
             val to = ((lineNumber + 1) * packedLineMaxLength).coerceAtMost(totalString.length)
             "\"${totalString.substring(from, to).createUnicodeNotationString()}\""
         }
-
-        return PsiElementFactory.getInstance(expression.project).createExpressionFromText(newText, expression)
+        kotlin.runCatching {
+            PsiElementFactory.getInstance(expression.project).createExpressionFromText(newText, expression)
+        }.onSuccess {
+            return it
+        }.onFailure {
+            RuntimeException("Failed to encode text.\nTarget:$totalString", it).printStackTrace()
+        }
+        return null
     }
 
     private fun createUnicodeNotationPsiString(expression: PsiLiteralExpression): PsiElement {
