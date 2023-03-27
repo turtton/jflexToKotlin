@@ -10,6 +10,7 @@ import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.psi.*
 import com.intellij.psi.impl.source.tree.java.PsiLiteralExpressionImpl
 import org.jetbrains.kotlin.idea.actions.JavaToKotlinAction
+import org.jetbrains.kotlin.idea.base.util.module
 import org.jetbrains.kotlin.idea.util.application.executeWriteCommand
 import org.jetbrains.kotlin.psi.KtFile
 import kotlin.streams.toList
@@ -39,7 +40,7 @@ class ConvertLexerToKotlin : AnAction() {
         return JavaToKotlinAction.convertFiles(
             files = listOf(javaPsi),
             project = javaPsi.project,
-            module = ModuleUtilCore.findModuleForFile(javaPsi)!!,
+            module = javaPsi.module!!,
         ).single()
     }
 
@@ -51,7 +52,7 @@ class ConvertLexerToKotlin : AnAction() {
                         if (expression.operands.all {
                                 (it as? PsiLiteralExpressionImpl)?.literalElementType == JavaTokenType.STRING_LITERAL
                             }) {
-                            createShorterStringConcat(expression)?.let { expression.replace(it) }
+                            expression.replace(createShorterStringConcat(expression))
                             return
                         }
                     }
@@ -103,14 +104,20 @@ class ConvertLexerToKotlin : AnAction() {
             .replace("java.io.", "")
             .replace("java.util.", "")
             .replace("java.lang.", "")
+            .replace("import IOException", "")
+            .replace("import Reader", "")
+            .replace("import Locale", "")
+            .replace("Locale.getDefault()", "")
+            .replace("IOException", "Exception")
             .replace(": Set", ": HashSet")
             .replace(": List", ": ArrayList")
             .replace("(`in`: Reader)", "")
+            .replace("get() = Companion.field", "")
             .replace("@Throws(IOException::class)", "")
             .replace("] shl", "].toInt() shl")
             .replace("zzForAction@{", "zzForAction@")
-            .replace(Regex("}\\s+// store back cached position"), ""
-            )
+            .replace(Regex("}\\s+// store back cached position"), "")
+            .replace("private val zzReader: Reader", "override val state: Int = 0")
             .replace(
                 "init {\n" +
                         "        this.zzReader = `in`\n" +
@@ -122,7 +129,7 @@ class ConvertLexerToKotlin : AnAction() {
         }
     }
 
-    private fun createShorterStringConcat(expression: PsiPolyadicExpression): PsiElement? {
+    private fun createShorterStringConcat(expression: PsiPolyadicExpression): PsiElement {
         val totalString =
             expression.operands.joinToString(separator = "") { (it as PsiLiteralExpression).value as String }
 
@@ -132,14 +139,7 @@ class ConvertLexerToKotlin : AnAction() {
             val to = ((lineNumber + 1) * packedLineMaxLength).coerceAtMost(totalString.length)
             "\"${totalString.substring(from, to).createUnicodeNotationString()}\""
         }
-        kotlin.runCatching {
-            PsiElementFactory.getInstance(expression.project).createExpressionFromText(newText, expression)
-        }.onSuccess {
-            return it
-        }.onFailure {
-            RuntimeException("Failed to encode text.\nTarget:$totalString", it).printStackTrace()
-        }
-        return null
+         return PsiElementFactory.getInstance(expression.project).createExpressionFromText(newText, expression)
     }
 
     private fun createUnicodeNotationPsiString(expression: PsiLiteralExpression): PsiElement {
@@ -160,6 +160,8 @@ internal fun String.createUnicodeNotationString(): String {
         when (cp) {
             0x000a -> "\\n"
             0x000d -> "\\r"
+            0x0022 -> "\\\""
+            0x005c -> "\\\\"
             else -> "\\u" + String.format("%04x", cp)
         }
     }
